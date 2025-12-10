@@ -31,6 +31,8 @@ export class SocketService {
     private _error = signal<string | null>(null);
     private _roundEndScores = signal<{ playerId: string; roundScore: number; totalScore: number }[] | null>(null);
     private _gameEndWinner = signal<{ playerId: string; username: string; score: number } | null>(null);
+    private _onlineCount = signal<number>(0);
+    private _isDev = signal<boolean>(typeof window !== 'undefined' && window.location.port === '4200');
 
     // Signaux publics (lecture seule)
     readonly isConnected = this._isConnected.asReadonly();
@@ -42,6 +44,8 @@ export class SocketService {
     readonly error = this._error.asReadonly();
     readonly roundEndScores = this._roundEndScores.asReadonly();
     readonly gameEndWinner = this._gameEndWinner.asReadonly();
+    readonly onlineCount = this._onlineCount.asReadonly();
+    readonly isDev = this._isDev.asReadonly();
 
     // Signaux dérivés
     readonly isInRoom = computed(() => this._currentRoom() !== null);
@@ -71,6 +75,65 @@ export class SocketService {
     }
 
     /**
+     * Rejoint le serveur avec un pseudo
+     */
+    join(username: string): void {
+        if (!this.socket) return;
+        this.socket.emit('player:join', username);
+        this.saveSession(username);
+    }
+
+    /**
+     * Change le pseudo du joueur
+     */
+    rename(username: string): void {
+        if (!this.socket) return;
+        this.socket.emit('player:rename', username);
+    }
+
+    /**
+     * Déconnecte le joueur et efface la session
+     */
+    logout(): void {
+        if (!this.socket) return;
+        this.socket.disconnect();
+        this.clearSession();
+        this._isConnected.set(false);
+        this._currentPlayer.set(null);
+        this._currentRoom.set(null);
+        this.connect();
+    }
+
+    // --- Gestion de Session ---
+
+    private readonly SESSION_KEY = 'skyjo_session';
+
+    private saveSession(username: string): void {
+        try {
+            localStorage.setItem(this.SESSION_KEY, JSON.stringify({ username }));
+        } catch (e) {
+            console.error('Erreur localStorage:', e);
+        }
+    }
+
+    clearSession(): void {
+        try {
+            localStorage.removeItem(this.SESSION_KEY);
+        } catch (e) {
+            console.error('Erreur localStorage:', e);
+        }
+    }
+
+    restoreSession(): { username: string } | null {
+        try {
+            const data = localStorage.getItem(this.SESSION_KEY);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /**
      * Configure les écouteurs d'événements
      */
     private setupListeners(): void {
@@ -94,6 +157,16 @@ export class SocketService {
             this._currentPlayer.set(player);
             this._error.set(null);
             console.log('[Socket] Joueur connecté:', player.username);
+        });
+
+        this.socket.on('player:updated', (player) => {
+            this._currentPlayer.set(player);
+            this.saveSession(player.username);
+            console.log('[Socket] Profil mis à jour:', player.username);
+        });
+
+        this.socket.on('players:online', (count) => {
+            this._onlineCount.set(count);
         });
 
         this.socket.on('player:error', (message) => {
@@ -140,10 +213,14 @@ export class SocketService {
         });
 
         this.socket.on('skyjo:roundEnd', (scores) => {
+            console.log('[Socket] roundEnd reçu:', scores);
             this._roundEndScores.set(scores);
         });
 
         this.socket.on('skyjo:gameEnd', (winner) => {
+            console.log('[Socket] gameEnd reçu:', winner);
+            // Effacer roundEndScores pour afficher le modal de fin de partie
+            this._roundEndScores.set(null);
             this._gameEndWinner.set(winner);
         });
 
@@ -156,9 +233,7 @@ export class SocketService {
     // Actions joueur
     // ============================================
 
-    join(username: string): void {
-        this.socket?.emit('player:join', username);
-    }
+
 
     // ============================================
     // Actions room
@@ -166,6 +241,10 @@ export class SocketService {
 
     createRoom(name: string, gameType: GameType, isPrivate: boolean): void {
         this.socket?.emit('room:create', { name, gameType, isPrivate });
+    }
+
+    createSoloRoom(numBots: number): void {
+        this.socket?.emit('room:createSolo', { numBots });
     }
 
     joinRoom(roomId: string, privateCode?: string): void {
@@ -195,6 +274,14 @@ export class SocketService {
 
     refreshRooms(): void {
         this.socket?.emit('room:list');
+    }
+
+    addBot(): void {
+        this.socket?.emit('room:addBot');
+    }
+
+    removeBot(botId: string): void {
+        this.socket?.emit('room:removeBot', { botId });
     }
 
     // ============================================

@@ -12,6 +12,7 @@ export interface Player {
     username: string;
     isHost: boolean;
     isReady: boolean;
+    isBot?: boolean;
 }
 
 // ============================================
@@ -74,12 +75,16 @@ export interface SkyjoGameState {
 
 export interface ClientToServerEvents {
     'player:join': (username: string) => void;
+    'player:rename': (username: string) => void;
     'room:create': (data: { name: string; gameType: GameType; isPrivate: boolean }) => void;
     'room:join': (data: { roomId: string; privateCode?: string }) => void;
     'room:leave': () => void;
     'room:ready': () => void;
     'room:start': () => void;
     'room:list': () => void;
+    'room:createSolo': (data: { numBots: number }) => void;
+    'room:addBot': () => void;
+    'room:removeBot': (data: { botId: string }) => void;
     'skyjo:revealInitial': (cardIndices: [number, number]) => void;
     'skyjo:drawFromDeck': () => void;
     'skyjo:drawFromDiscard': () => void;
@@ -91,6 +96,8 @@ export interface ClientToServerEvents {
 export interface ServerToClientEvents {
     'player:connected': (player: Player) => void;
     'player:error': (message: string) => void;
+    'players:online': (count: number) => void;
+    'player:updated': (player: Player) => void;
     'room:created': (room: GameRoom) => void;
     'room:joined': (room: GameRoom) => void;
     'room:updated': (room: GameRoom) => void;

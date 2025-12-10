@@ -11,34 +11,6 @@ function generateCardId(): string {
 }
 
 /**
- * Crée un deck Skyjo standard de 150 cartes
- * Distribution: -2(×5), -1(×10), 0(×15), 1-12(×10 chacun)
- */
-function createDeck(): SkyjoCard[] {
-    const deck: SkyjoCard[] = [];
-
-    // Ajouter les cartes selon leur distribution
-    const distribution: { value: number; count: number }[] = [
-        { value: -2, count: 5 },
-        { value: -1, count: 10 },
-        { value: 0, count: 15 },
-        ...Array.from({ length: 12 }, (_, i) => ({ value: i + 1, count: 10 }))
-    ];
-
-    for (const { value, count } of distribution) {
-        for (let i = 0; i < count; i++) {
-            deck.push({
-                value,
-                isRevealed: false,
-                id: generateCardId()
-            });
-        }
-    }
-
-    return deck;
-}
-
-/**
  * Mélange un tableau avec l'algorithme Fisher-Yates
  */
 function shuffle<T>(array: T[]): T[] {
@@ -91,7 +63,7 @@ export class SkyjoGame {
         this.lastTurnPlayers.clear();
 
         // Créer et mélanger le deck
-        this.drawPile = shuffle(createDeck());
+        this.drawPile = this.createDeck();
         this.discardPile = [];
 
         // Distribuer 12 cartes à chaque joueur (grille 4 colonnes × 3 lignes)
@@ -369,6 +341,28 @@ export class SkyjoGame {
         for (let col = 0; col < player.grid.length; col++) {
             const column = player.grid[col];
 
+            // Si la colonne est vide ou annulée (contient des nulls), on ignore
+            if (column.length === 0 || column.some(c => c === null)) continue;
+
+            // Vérifier que toutes les cartes sont révélées
+            // Le type est SkyjoCard[] | null[], mais ici on sait que ce ne sont pas des nulls grâce au check précédent
+            // TypeScript peut raler si on ne fait pas attention. SkyjoPlayerState définit grid comme SkyjoCard[][].
+            // Pour supporter les nulls, il faudrait changer le type, mais c'est risqué.
+            // On va tricher : on va garder les objets cartes mais changer leur valeur à -999 (valeur impossible)
+            // ou ajouter une propriété.
+
+            // Attend, si je ne peux pas changer les types facilement, je ne peux pas mettre null.
+            // Je vais Vider le tableau comme avant, MAIS le front devra gérer le fait que column.length === 0
+            // ET afficher 3 placeholders. 
+            // LE PROBLEME : Si column.length === 0, on perd l'info qu'il y AVAIT une colonne ici (vs setup bizarre).
+            // Mais dans Skyjo il y a toujours 4 colonnes. Donc si length === 0, c'est forcement une colonne éliminée.
+
+            // Re-essayons l'approche simple : Vider la colonne côté serveur.
+            // Côté client, si column.length === 0, on affiche 3 cartes placeholders.
+
+            // Donc je RESTE sur l'implémentation serveur actuelle qui vide la colonne.
+            // JE DOIS SEULEMENT AJOUTER dealCards ici.
+
             // Vérifier que toutes les cartes sont révélées et identiques
             if (column.length >= 3 && column.every(card => card.isRevealed)) {
                 const firstValue = column[0].value;
@@ -382,6 +376,56 @@ export class SkyjoGame {
                 }
             }
         }
+    }
+
+    /**
+     * Distribue les cartes pour une nouvelle manche
+     */
+    public dealCards(): void {
+        this.drawPile = this.createDeck();
+        // 4 colonnes × 3 lignes
+        for (const player of this.players) {
+            player.grid = [];
+            player.roundScore = 0;
+            player.hasFinished = false;
+            for (let col = 0; col < 4; col++) {
+                player.grid[col] = [];
+                for (let row = 0; row < 3; row++) {
+                    player.grid[col][row] = this.drawPile.pop()!;
+                }
+            }
+        }
+        // Retourner la première carte de la pioche pour la défausse
+        const firstDiscard = this.drawPile.pop()!;
+        firstDiscard.isRevealed = true;
+        this.discardPile.push(firstDiscard);
+    }
+
+    /**
+     * Crée un deck Skyjo standard de 150 cartes
+     */
+    private createDeck(): SkyjoCard[] {
+        const deck: SkyjoCard[] = [];
+
+        // Ajouter les cartes selon leur distribution
+        const distribution: { value: number; count: number }[] = [
+            { value: -2, count: 5 },
+            { value: -1, count: 10 },
+            { value: 0, count: 15 },
+            ...Array.from({ length: 12 }, (_, i) => ({ value: i + 1, count: 10 }))
+        ];
+
+        for (const { value, count } of distribution) {
+            for (let i = 0; i < count; i++) {
+                deck.push({
+                    value,
+                    isRevealed: false,
+                    id: generateCardId()
+                });
+            }
+        }
+
+        return shuffle(deck);
     }
 
     /**
@@ -414,20 +458,13 @@ export class SkyjoGame {
         if (!this.finisherId) {
             this.finisherId = playerId;
             this.phase = 'lastTurn';
-            this.lastTurnPlayers.add(playerId);
+            // Le joueur qui finit ne joue plus
+            // On passe immédiatement au suivant via nextTurn()
             return this.nextTurn();
         }
 
-        // Si on est en mode dernier tour, marquer le joueur comme ayant joué
-        if (this.phase === 'lastTurn') {
-            this.lastTurnPlayers.add(playerId);
-
-            // Vérifier si tout le monde a joué son dernier tour
-            if (this.lastTurnPlayers.size === this.players.length) {
-                return this.endRound();
-            }
-        }
-
+        // Si quelqu'un d'autre finit pendant le dernier tour, ça ne change rien
+        // Il a joué son dernier coup, on passe au suivant.
         return this.nextTurn();
     }
 
@@ -443,18 +480,14 @@ export class SkyjoGame {
         if (this.phase === 'lastTurn') {
             // Trouver le prochain joueur qui n'a pas encore joué son dernier tour
             let nextIndex = (this.currentPlayerIndex + 1) % this.players.length;
-            let loopCount = 0;
 
-            while (this.lastTurnPlayers.has(this.players[nextIndex].oderId) && loopCount < this.players.length) {
-                nextIndex = (nextIndex + 1) % this.players.length;
-                loopCount++;
-            }
-
-            // Si tout le monde a joué, terminer la manche
-            if (loopCount >= this.players.length) {
+            // Si le prochain joueur est celui qui a déclenché la fin, alors TOUT LE MONDE a joué
+            // On arrête la manche immédiatement.
+            if (this.players[nextIndex].oderId === this.finisherId) {
                 return this.endRound();
             }
 
+            // Sinon c'est au tour de ce prochain joueur
             this.currentPlayerIndex = nextIndex;
         } else {
             // Mode normal: passer au suivant
@@ -472,6 +505,7 @@ export class SkyjoGame {
         gameEnd?: { playerId: string; username: string; score: number };
     } {
         this.phase = 'roundEnd';
+        console.log('[endRound] Manche terminée, phase:', this.phase);
 
         // Révéler toutes les cartes restantes
         for (const player of this.players) {
@@ -508,6 +542,7 @@ export class SkyjoGame {
             }
 
             player.score += player.roundScore;
+            console.log(`[endRound] ${player.username}: roundScore=${player.roundScore}, totalScore=${player.score}`);
 
             roundScores.push({
                 playerId: player.oderId,
@@ -518,11 +553,15 @@ export class SkyjoGame {
 
         // Vérifier si quelqu'un a atteint 100 points
         const loser = this.players.find(p => p.score >= 100);
+        console.log('[endRound] Joueur avec >= 100 pts?', loser ? `${loser.username} (${loser.score} pts)` : 'Non');
+
         if (loser) {
+            console.log('[endRound] FIN DE PARTIE - Appel endGame()');
             return this.endGame(roundScores);
         }
 
         // Préparer la prochaine manche
+        console.log('[endRound] Pas de fin de partie - Manche suivante');
         this.roundNumber++;
         this.startNewRound();
 
@@ -587,6 +626,42 @@ export class SkyjoGame {
             roundNumber: this.roundNumber,
             finisherId: this.finisherId || undefined
         };
+    }
+
+    /**
+     * Passe à la manche suivante (appelé par le client ou le jeu)
+     */
+    nextRound(playerId: string): {
+        error?: string
+    } {
+        // Seul l'hôte ou le joueur actuel peut lancer la manche suivante (ou n'importe qui en setup/fin)
+        // Ici on simplifie : n'importe qui peut signaler prêt ou lancer si c'est fini
+        if (this.phase !== 'gameEnd' && this.phase !== 'roundEnd') {
+            return { error: 'La manche n\'est pas terminée' };
+        }
+
+        // Logique simplifiée : réinitialiser pour la prochaine manche
+        this.resetRound();
+        return {};
+    }
+
+    /**
+     * Réinitialise le jeu pour une nouvelle manche
+     */
+    private resetRound(): void {
+        this.roundNumber++;
+        this.phase = 'setup';
+        this.setupPlayersReady.clear();
+        this.drawPile = [];
+        this.discardPile = [];
+        this.drawnCard = null;
+        this.lastTurnPlayers.clear();
+        this.finisherId = null;
+        this.mustRevealCard = false;
+
+        // Réinitialiser les cartes et scores
+        this.dealCards();
+        this.currentPlayerIndex = (this.roundNumber - 1) % this.players.length;
     }
 
     /**

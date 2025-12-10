@@ -5,6 +5,7 @@
 
 import { Server } from 'socket.io';
 import { SkyjoGame } from './games/skyjo.js';
+import { SkyjoAI } from './games/skyjo-ai.js';
 import type {
     GameRoom,
     GameType,
@@ -40,6 +41,15 @@ export class GameManager {
         this.io = io;
     }
 
+    /**
+     * Récupère l'état actuel d'un jeu Skyjo
+     */
+    getGameState(roomId: string): SkyjoGameState | null {
+        const game = this.skyjoGames.get(roomId);
+        if (!game) return null;
+        return game.getState(roomId);
+    }
+
     // ============================================
     // Gestion des Rooms
     // ============================================
@@ -69,6 +79,244 @@ export class GameManager {
         this.playerRooms.set(player.id, roomId);
 
         return room;
+    }
+
+    /**
+     * Crée une room solo avec des bots IA
+     */
+    createSoloRoom(player: Player, numBots: number): { room: GameRoom; gameState: SkyjoGameState } {
+        // Si le joueur est déjà dans une room, le retirer
+        this.leaveRoom(player);
+
+        // Limiter le nombre de bots entre 1 et 7
+        const clampedBots = Math.max(1, Math.min(7, numBots));
+
+        const roomId = generateId();
+
+        // Créer les bots
+        const bots: Player[] = [];
+        for (let i = 0; i < clampedBots; i++) {
+            bots.push({
+                id: SkyjoAI.generateBotId(),
+                username: SkyjoAI.generateBotName(i),
+                isHost: false,
+                isReady: true,
+                isBot: true
+            });
+        }
+
+        const room: GameRoom = {
+            id: roomId,
+            name: `Solo vs ${clampedBots} Bot${clampedBots > 1 ? 's' : ''}`,
+            gameType: 'skyjo',
+            isPrivate: true,
+            hostId: player.id,
+            players: [{ ...player, isHost: true, isReady: false }, ...bots],
+            maxPlayers: 8,
+            minPlayers: 1, // Solo: 1 joueur minimum
+            status: 'playing', // Démarrer immédiatement
+            isSolo: true
+        };
+
+        this.rooms.set(roomId, room);
+        this.playerRooms.set(player.id, roomId);
+
+        // Créer le jeu Skyjo et démarrer
+        const skyjoGame = new SkyjoGame(room.players);
+        this.skyjoGames.set(roomId, skyjoGame);
+
+        // Faire révéler les cartes initiales des bots
+        this.processBotInitialReveal(roomId);
+
+        return { room, gameState: skyjoGame.getState(roomId) };
+    }
+
+    /**
+     * Fait révéler les 2 cartes initiales par tous les bots
+     * Public pour pouvoir être appelé après un roundEnd
+     */
+    processBotInitialReveal(roomId: string): void {
+        const game = this.skyjoGames.get(roomId);
+        const room = this.rooms.get(roomId);
+        if (!game || !room) return;
+
+        for (const player of room.players) {
+            if (player.isBot) {
+                const indices = SkyjoAI.chooseInitialCards();
+                game.revealInitialCards(player.id, indices);
+            }
+        }
+    }
+
+    /**
+     * Exécute les tours des bots automatiquement
+     * Appelé après chaque action du joueur humain
+     */
+    processBotTurns(roomId: string): { gameState: SkyjoGameState; roundEnd?: any; gameEnd?: any } | null {
+        const game = this.skyjoGames.get(roomId);
+        const room = this.rooms.get(roomId);
+        if (!game || !room) return null;
+
+        // Vérifier s'il y a des bots dans la room
+        const hasBots = room.players.some(p => p.isBot);
+        if (!hasBots) return null;
+
+        const state = game.getState(roomId);
+        let currentState = state;
+        let roundEnd = undefined;
+        let gameEnd = undefined;
+
+        // Si c'est le tour d'un bot, exécuter UN SEUL tour
+        if (this.isCurrentPlayerBot(roomId)) {
+            const botResult = this.executeSingleBotTurn(roomId);
+            if (botResult) {
+                currentState = botResult.gameState;
+                if (botResult.roundEnd) roundEnd = botResult.roundEnd;
+                if (botResult.gameEnd) gameEnd = botResult.gameEnd;
+            }
+        }
+
+        return { gameState: currentState, roundEnd, gameEnd };
+    }
+
+    /**
+     * Vérifie si le joueur actuel est un bot
+     */
+    private isCurrentPlayerBot(roomId: string): boolean {
+        const game = this.skyjoGames.get(roomId);
+        const room = this.rooms.get(roomId);
+        if (!game || !room) return false;
+
+        const state = game.getState(roomId);
+        const currentPlayer = state.players[state.currentPlayerIndex];
+
+        // Vérifier dans la room si ce joueur est un bot
+        const roomPlayer = room.players.find(p => p.id === currentPlayer?.oderId);
+        return roomPlayer?.isBot === true;
+    }
+
+    /**
+     * Exécute un seul tour de bot
+     */
+    private executeSingleBotTurn(roomId: string): { gameState: SkyjoGameState; roundEnd?: any; gameEnd?: any } | null {
+        const game = this.skyjoGames.get(roomId);
+        if (!game) return null;
+
+        const state = game.getState(roomId);
+        const currentPlayer = state.players[state.currentPlayerIndex];
+        if (!currentPlayer) return null;
+
+        const playerId = currentPlayer.oderId;
+        const topDiscard = state.discardPile.length > 0 ? state.discardPile[state.discardPile.length - 1] : null;
+
+        // Phase 1: Décider quoi faire
+        let decision = SkyjoAI.decideTurn(currentPlayer, topDiscard, state.drawnCard || null);
+
+        // Exécuter l'action
+        if (decision.action === 'drawDeck') {
+            game.drawFromDeck(playerId);
+            // Redemander après avoir pioché
+            const newState = game.getState(roomId);
+            const updatedPlayer = newState.players.find(p => p.oderId === playerId);
+            decision = SkyjoAI.decideTurn(updatedPlayer!, topDiscard, newState.drawnCard || null);
+        } else if (decision.action === 'drawDiscard') {
+            game.drawFromDiscard(playerId);
+            // Redemander après avoir pioché
+            const newState = game.getState(roomId);
+            const updatedPlayer = newState.players.find(p => p.oderId === playerId);
+            decision = SkyjoAI.decideTurn(updatedPlayer!, topDiscard, newState.drawnCard || null);
+        }
+
+        // Phase 2: Échanger ou défausser
+        if (decision.action === 'swap') {
+            const result = game.swapCard(playerId, { col: decision.col, row: decision.row });
+            return {
+                gameState: game.getState(roomId),
+                roundEnd: result.roundEnd,
+                gameEnd: result.gameEnd
+            };
+        } else if (decision.action === 'discard') {
+            game.discardDrawnCard(playerId);
+            // Révéler une carte
+            const revealPos = SkyjoAI.chooseCardToReveal(currentPlayer);
+            const result = game.revealCard(playerId, revealPos);
+            return {
+                gameState: game.getState(roomId),
+                roundEnd: result.roundEnd,
+                gameEnd: result.gameEnd
+            };
+        }
+
+        return { gameState: game.getState(roomId) };
+    }
+
+    /**
+     * Ajoute un bot à une room existante
+     */
+    addBot(player: Player): { room?: GameRoom; error?: string } {
+        const roomId = this.playerRooms.get(player.id);
+        if (!roomId) return { error: 'Vous n\'êtes dans aucune partie' };
+
+        const room = this.rooms.get(roomId);
+        if (!room) return { error: 'Partie introuvable' };
+
+        // Vérifier que le joueur est l'hôte
+        if (room.hostId !== player.id) {
+            return { error: 'Seul l\'hôte peut ajouter des bots' };
+        }
+
+        // Vérifier qu'il reste de la place
+        if (room.players.length >= room.maxPlayers) {
+            return { error: 'La partie est complète' };
+        }
+
+        // Vérifier que la partie n'a pas encore commencé
+        if (room.status !== 'waiting') {
+            return { error: 'La partie a déjà commencé' };
+        }
+
+        // Créer le bot
+        const botIndex = room.players.filter(p => p.isBot).length;
+        const bot: Player = {
+            id: SkyjoAI.generateBotId(),
+            username: SkyjoAI.generateBotName(botIndex),
+            isHost: false,
+            isReady: true,
+            isBot: true
+        };
+
+        room.players.push(bot);
+        return { room };
+    }
+
+    /**
+     * Retire un bot d'une room existante
+     */
+    removeBot(player: Player, botId: string): { room?: GameRoom; error?: string } {
+        const roomId = this.playerRooms.get(player.id);
+        if (!roomId) return { error: 'Vous n\'êtes dans aucune partie' };
+
+        const room = this.rooms.get(roomId);
+        if (!room) return { error: 'Partie introuvable' };
+
+        // Vérifier que le joueur est l'hôte
+        if (room.hostId !== player.id) {
+            return { error: 'Seul l\'hôte peut retirer des bots' };
+        }
+
+        // Vérifier que la partie n'a pas encore commencé
+        if (room.status !== 'waiting') {
+            return { error: 'La partie a déjà commencé' };
+        }
+
+        // Trouver et retirer le bot
+        const botIndex = room.players.findIndex(p => p.id === botId && p.isBot);
+        if (botIndex === -1) {
+            return { error: 'Bot non trouvé' };
+        }
+
+        room.players.splice(botIndex, 1);
+        return { room };
     }
 
     /**
@@ -333,6 +581,29 @@ export class GameManager {
             roomId,
             roundEnd: result.roundEnd,
             gameEnd: result.gameEnd
+        };
+    }
+
+    /**
+     * Passe à la manche suivante
+     */
+    skyjoNextRound(player: Player): {
+        gameState?: SkyjoGameState;
+        roomId?: string;
+        error?: string
+    } {
+        const roomId = this.playerRooms.get(player.id);
+        if (!roomId) return { error: 'Partie introuvable' };
+
+        const game = this.skyjoGames.get(roomId);
+        if (!game) return { error: 'Jeu non trouvé' };
+
+        const result = game.nextRound(player.id);
+        if (result.error) return { error: result.error };
+
+        return {
+            gameState: game.getState(roomId),
+            roomId
         };
     }
 

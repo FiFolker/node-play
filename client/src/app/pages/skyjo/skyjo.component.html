@@ -1,0 +1,264 @@
+<div class="skyjo-shell">
+    <!-- Panel Gauche : Leaderboard Permanent -->
+    <aside class="side-panel leaderboard">
+        <div class="panel-header">
+            <h3>Classement</h3>
+            <span class="player-count">{{ sortedPlayers().length }} joueurs</span>
+        </div>
+        <div class="lb-list">
+            @for (p of sortedPlayers(); track p.oderId; let i = $index) {
+            <div class="lb-row" [class.me]="p.oderId === socketService.currentPlayer()?.id" [class.dc]="p.disconnected">
+                <span class="lb-rank">#{{ i + 1 }}</span>
+                <div class="lb-info">
+                    <span class="lb-name">{{ p.username }}</span>
+                    <span class="lb-score">{{ p.score }} pts</span>
+                </div>
+            </div>
+            }
+        </div>
+    </aside>
+
+    <!-- Arène Principale -->
+    <main class="main-arena">
+        <!-- Rail Supérieur : Adversaires -->
+        <section class="opponents-rail">
+            @for (player of allOpponents(); track player.oderId) {
+            <div class="opponent-card" [class.playing]="isCurrentPlayer(player.oderId)"
+                [class.disconnected]="player.disconnected">
+                <!-- Nom du joueur au-dessus -->
+                <div class="opp-header">
+                    <span class="opp-name">{{ player.username }}</span>
+                    <span class="opp-score-badge">{{ calculatePlayerScore(player) }} pts</span>
+                </div>
+                <!-- Grille plus grande -->
+                <div class="opp-grid-mini" [class.greyed]="player.disconnected">
+                    @for (col of player.grid; track $index) {
+                    <div class="mini-col" [class.eliminated]="col.length === 0">
+                        @if (col.length > 0) {
+                        @for (card of col; track card.id) {
+                        <div class="mini-card" [class.revealed]="card.isRevealed"
+                            [class]="card.isRevealed ? getCardColorClass(card.value) : ''">
+                            @if (card.isRevealed) { {{ card.value }} }
+                        </div>
+                        }
+                        } @else {
+                        <!-- Colonne vide placeholder -->
+                        <div class="mini-card-placeholder"></div>
+                        }
+                    </div>
+                    }
+                </div>
+            </div>
+            }
+        </section>
+
+        <!-- Champ Central : Action & Joueur -->
+        <section class="center-field">
+
+            <!-- Zone Piles et Main (Left Side) -->
+            <div class="piles-and-hand">
+                <!-- Piles Column -->
+                <div class="piles-zone">
+                    <!-- Pioche -->
+                    <div class="pile-group">
+                        <div class="pile-label">Pioche</div>
+                        <div class="pile draw" [class.active]="canDrawFromDeck()" (click)="drawFromDeck()">
+                            <div class="card-back-stack"></div>
+                            <span class="pile-count">{{ socketService.gameState()?.drawPile?.length }}</span>
+                        </div>
+                    </div>
+
+                    <!-- Défausse -->
+                    <div class="pile-group">
+                        <div class="pile-label">Défausse</div>
+                        <div class="pile discard" [class.active]="canDrawFromDiscard()" (click)="drawFromDiscard()">
+                            @if (topDiscard(); as card) {
+                            <div class="big-card discard-top" [class]="getCardColorClass(card.value)">
+                                <span class="card-val">{{ card.value }}</span>
+                            </div>
+                            } @else {
+                            <div class="empty-slot">Vide</div>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Zone permanente pour la carte en main (évite le décalage) -->
+                <div class="hand-slot">
+                    @if (socketService.drawnCard(); as card) {
+                    <div class="hand-transit animate-pop">
+                        <div class="big-card" [class]="getCardColorClass(card.value)">
+                            <span class="card-val">{{ card.value }}</span>
+                        </div>
+                        <button class="btn-action discard" (click)="discardDrawn()">Défausser</button>
+                    </div>
+                    }
+                </div>
+            </div>
+
+            <!-- Zone Joueur (Center) -->
+            <div class="player-zone" [class.my-turn]="isMyTurn()">
+                <!-- Wrapper pour grille + HUD (sera centré avec status bar) -->
+                <div class="board-and-hud">
+                    <!-- Grille Joueur -->
+                    <div class="player-grid">
+                        @for (col of myPlayerState()?.grid || []; track $index; let colIdx = $index) {
+                        <div class="grid-col" [class.eliminated]="col.length === 0">
+                            <!-- Placeholder si colonne vide -->
+                            @if (col.length === 0) {
+                            <div class="game-card placeholder"></div>
+                            } @else {
+                            @for (card of col; track card.id; let rowIdx = $index) {
+                            <button class="game-card" [class.revealed]="card.isRevealed"
+                                [class.clickable]="canClickCard(colIdx, rowIdx)"
+                                [class.selecting]="isSelectingInitial() && !card.isRevealed"
+                                [class.selected]="isCardSelected(colIdx, rowIdx)"
+                                [class]="card.isRevealed ? getCardColorClass(card.value) : ''"
+                                [disabled]="!canClickCard(colIdx, rowIdx)" (click)="onCardClick(colIdx, rowIdx)">
+                                @if (card.isRevealed) {
+                                <span class="card-num">{{ card.value }}</span>
+                                } @else {
+                                <div class="card-back-pattern"></div>
+                                }
+                            </button>
+                            }
+                            }
+                        </div>
+                        }
+                    </div>
+
+                    <!-- HUD à droite -->
+                    <div class="player-hud">
+                        <div class="hud-identity">
+                            <span class="hud-name">Moi</span>
+                            @if(isMyTurn()){
+                            <span class="turn-badge">Ton Tour</span>
+                            }
+                        </div>
+                        <div class="hud-score">
+                            <div class="score-val">{{ myCurrentScore() }}</div>
+                            <span class="score-label">Points Actuels</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Game Status Bar (aligné avec le centre du board-and-hud) -->
+                <div class="status-banner" [class.urgent]="phase() === 'lastTurn'">
+                    <span class="round-indicator">Manche {{ socketService.gameState()?.roundNumber }}</span>
+                    <span class="status-message">
+                        @if (phase() === 'setup') {
+                        Retourne 2 cartes pour commencer
+                        } @else if (phase() === 'lastTurn') {
+                        🚨 DERNIER TOUR 🚨
+                        } @else {
+                        @if (isMyTurn()) {
+                        @if (mustRevealCard()) {
+                        Révèle une carte
+                        } @else if (socketService.drawnCard()) {
+                        Place ta carte OU Défause
+                        } @else {
+                        Pioche une carte ou prends la défausse
+                        }
+                        } @else {
+                        Au tour de {{ currentPlayerName() }}...
+                        }
+                        }
+                    </span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Modals (Overlay) -->
+
+    <!-- Modal Fin de Manche (seulement si PAS de fin de partie) -->
+    @if (socketService.roundEndScores() && !socketService.gameEndWinner()) {
+    <div class="modal-overlay">
+        <div class="modal-box large">
+            <h3>📊 Fin de Manche {{ socketService.gameState()?.roundNumber }}</h3>
+            <div class="scores-table">
+                @for (s of sortedScores(); track s.playerId) {
+                <div class="score-line" [class.me]="s.playerId === socketService.currentPlayer()?.id">
+                    <span class="name">{{ getPlayerName(s.playerId) }}</span>
+                    <span class="round-pts">+{{ s.roundScore }}</span>
+                    <span class="total-pts">{{ s.totalScore }}</span>
+                </div>
+                }
+            </div>
+            <button class="btn-primary" (click)="socketService.clearRoundEnd()">Manche Suivante</button>
+        </div>
+    </div>
+    }
+
+    <!-- Modal Fin de Jeu avec Podium -->
+    @if (socketService.gameEndWinner(); as w) {
+    <div class="modal-overlay">
+        <div class="modal-box game-over">
+            <div class="game-over-header">
+                <h2>🏆 Partie Terminée !</h2>
+                <p class="game-rules">
+                    Un joueur a atteint 100 points.<br>
+                    <strong>Le score le plus bas gagne !</strong>
+                </p>
+            </div>
+
+            <!-- Podium visuel 2-1-3 -->
+            <div class="podium-container">
+                <!-- 2ème place (gauche) -->
+                @if (sortedPlayers()[1]; as second) {
+                <div class="podium-slot second">
+                    <span class="podium-medal">🥈</span>
+                    <span class="podium-name">{{ second.username }}</span>
+                    <div class="podium-block">
+                        <span class="podium-score">{{ second.score }} pts</span>
+                    </div>
+                </div>
+                }
+
+                <!-- 1ère place (centre) -->
+                @if (sortedPlayers()[0]; as first) {
+                <div class="podium-slot first">
+                    <span class="podium-medal crown">👑</span>
+                    <span class="podium-name">{{ first.username }}</span>
+                    <div class="podium-block">
+                        <span class="podium-score">{{ first.score }} pts</span>
+                    </div>
+                </div>
+                }
+
+                <!-- 3ème place (droite) -->
+                @if (sortedPlayers()[2]; as third) {
+                <div class="podium-slot third">
+                    <span class="podium-medal">🥉</span>
+                    <span class="podium-name">{{ third.username }}</span>
+                    <div class="podium-block">
+                        <span class="podium-score">{{ third.score }} pts</span>
+                    </div>
+                </div>
+                }
+            </div>
+
+            <!-- Classement des autres joueurs (4ème et +) -->
+            @if (sortedPlayers().length > 3) {
+            <div class="other-rankings">
+                @for (p of sortedPlayers().slice(3); track p.oderId; let i = $index) {
+                <div class="other-rank-row" [class.me]="p.oderId === socketService.currentPlayer()?.id">
+                    <span class="other-rank-pos">#{{ i + 4 }}</span>
+                    <span class="other-rank-name">{{ p.username }}</span>
+                    <span class="other-rank-score">{{ p.score }} pts</span>
+                </div>
+                }
+            </div>
+            }
+
+            <button class="btn-primary" (click)="returnToHub()">Retour au Hub</button>
+        </div>
+    </div>
+    }
+</div>
+
+<!-- Contrôles flottants (Quitter + Thème) -->
+<div class="floating-controls">
+    <app-theme-toggle />
+    <app-quit-button (confirmed)="quitGame()" />
+</div>

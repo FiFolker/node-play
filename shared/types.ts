@@ -12,6 +12,7 @@ export interface Player {
     username: string;     // Pseudo du joueur
     isHost: boolean;      // Est-ce l'hôte de la partie ?
     isReady: boolean;     // Prêt à jouer ?
+    isBot?: boolean;      // Est-ce un bot IA ?
 }
 
 // ============================================
@@ -31,6 +32,7 @@ export interface GameRoom {
     maxPlayers: number;   // Maximum 8 joueurs
     minPlayers: number;   // Minimum 2 joueurs
     status: 'waiting' | 'playing' | 'finished';
+    isSolo?: boolean;     // Partie solo contre IA ?
 }
 
 // ============================================
@@ -51,6 +53,7 @@ export interface SkyjoPlayerState {
     roundScore: number;   // Score de la manche en cours
     hasFinished: boolean; // A révélé toutes ses cartes ?
     disconnected?: boolean; // Joueur déconnecté ?
+    isBot?: boolean;      // Est-ce un bot IA ?
 }
 
 export interface SkyjoGameState {
@@ -75,6 +78,7 @@ export interface SkyjoGameState {
 export interface ClientToServerEvents {
     // Connexion
     'player:join': (username: string) => void;
+    'player:rename': (username: string) => void;
 
     // Lobby
     'room:create': (data: { name: string; gameType: GameType; isPrivate: boolean }) => void;
@@ -83,6 +87,9 @@ export interface ClientToServerEvents {
     'room:ready': () => void;
     'room:start': () => void;
     'room:list': () => void;
+    'room:createSolo': (data: { numBots: number }) => void;
+    'room:addBot': () => void;
+    'room:removeBot': (data: { botId: string }) => void;
 
     // Skyjo
     'skyjo:revealInitial': (cardIndices: [number, number]) => void;
@@ -91,6 +98,7 @@ export interface ClientToServerEvents {
     'skyjo:swapCard': (position: { col: number; row: number }) => void;
     'skyjo:discardDrawn': () => void;
     'skyjo:revealCard': (position: { col: number; row: number }) => void;
+    'skyjo:nextRound': () => void;
 }
 
 // ============================================
@@ -101,6 +109,8 @@ export interface ServerToClientEvents {
     // Connexion
     'player:connected': (player: Player) => void;
     'player:error': (message: string) => void;
+    'players:online': (count: number) => void;
+    'player:updated': (player: Player) => void;
 
     // Lobby
     'room:created': (room: GameRoom) => void;

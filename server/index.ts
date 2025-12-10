@@ -10,9 +10,11 @@ import cors from 'cors';
 import { GameManager } from './game-manager.js';
 import type { ClientToServerEvents, ServerToClientEvents, Player } from '../shared/types.js';
 
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
 const app = express();
 const httpServer = createServer(app);
+
+const BOT_TURN_DELAY = 2000;
 
 // Configuration Socket.io avec typage fort
 const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
@@ -32,6 +34,43 @@ const gameManager = new GameManager(io);
 // Stockage des joueurs connectés (socket.id -> Player)
 const connectedPlayers = new Map<string, Player>();
 
+// Fonction pour broadcaster le nombre de joueurs en ligne
+function broadcastOnlineCount() {
+    io.emit('players:online', connectedPlayers.size);
+}
+
+// Fonction pour gérer les tours des bots récursivement avec délai
+function handleBotTurns(roomId: string) {
+    setTimeout(() => {
+        const botResult = gameManager.processBotTurns(roomId);
+        if (botResult) {
+            io.to(roomId).emit('skyjo:state', botResult.gameState);
+
+            if (botResult.roundEnd) {
+                io.to(roomId).emit('skyjo:roundEnd', botResult.roundEnd);
+
+                // Préparer la nouvelle manche pour les bots
+                gameManager.processBotInitialReveal(roomId);
+
+                // Envoyer l'état mis à jour (les bots ont révélé)
+                const updatedState = gameManager.getGameState(roomId);
+                if (updatedState) {
+                    io.to(roomId).emit('skyjo:state', updatedState);
+                }
+                return;
+            }
+
+            if (botResult.gameEnd) {
+                io.to(roomId).emit('skyjo:gameEnd', botResult.gameEnd);
+                return;
+            }
+
+            // Continuer récursivement si c'est encore à un bot de jouer
+            handleBotTurns(roomId);
+        }
+    }, BOT_TURN_DELAY); // 1.5s de délai
+}
+
 // ============================================
 // Gestion des connexions Socket.io
 // ============================================
@@ -45,6 +84,10 @@ io.on('connection', (socket) => {
         // Validation du pseudo
         if (!username || username.trim().length < 2) {
             socket.emit('player:error', 'Le pseudo doit contenir au moins 2 caractères');
+            return;
+        }
+        if (username.trim().length > 12) {
+            socket.emit('player:error', 'Le pseudo ne peut pas dépasser 12 caractères');
             return;
         }
 
@@ -67,7 +110,39 @@ io.on('connection', (socket) => {
 
         connectedPlayers.set(socket.id, player);
         socket.emit('player:connected', player);
+        broadcastOnlineCount();
         console.log(`[Joueur] ${player.username} connecté`);
+    });
+
+    socket.on('player:rename', (username: string) => {
+        const player = connectedPlayers.get(socket.id);
+        if (!player) return;
+
+        // Validation du pseudo
+        if (!username || username.trim().length < 2) {
+            socket.emit('player:error', 'Le pseudo doit contenir au moins 2 caractères');
+            return;
+        }
+        if (username.trim().length > 12) {
+            socket.emit('player:error', 'Le pseudo ne peut pas dépasser 12 caractères');
+            return;
+        }
+
+        // Vérifier si le pseudo est déjà pris (sauf si c'est le même)
+        const existingPlayer = Array.from(connectedPlayers.values()).find(
+            p => p.username.toLowerCase() === username.trim().toLowerCase() && p.id !== socket.id
+        );
+        if (existingPlayer) {
+            socket.emit('player:error', 'Ce pseudo est déjà utilisé');
+            return;
+        }
+
+        const oldName = player.username;
+        player.username = username.trim();
+
+        socket.emit('player:updated', player);
+
+        console.log(`[Joueur] ${oldName} renommé en ${player.username}`);
     });
 
     // --- Événements de lobby ---
@@ -149,6 +224,58 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('room:createSolo', (data) => {
+        const player = connectedPlayers.get(socket.id);
+        if (!player) {
+            socket.emit('room:error', 'Vous devez être connecté pour créer une partie solo');
+            return;
+        }
+
+        const result = gameManager.createSoloRoom(player, data.numBots);
+        socket.join(result.room.id);
+        socket.emit('room:created', result.room);
+        socket.emit('skyjo:state', result.gameState);
+        console.log(`[Solo] ${player.username} a créé une partie solo contre ${data.numBots} bot(s)`);
+    });
+
+    socket.on('room:addBot', () => {
+        const player = connectedPlayers.get(socket.id);
+        if (!player) {
+            socket.emit('room:error', 'Vous devez être connecté');
+            return;
+        }
+
+        const result = gameManager.addBot(player);
+        if (result.error) {
+            socket.emit('room:error', result.error);
+            return;
+        }
+
+        if (result.room) {
+            io.to(result.room.id).emit('room:updated', result.room);
+            console.log(`[Room] Bot ajouté à la room "${result.room.name}"`);
+        }
+    });
+
+    socket.on('room:removeBot', (data) => {
+        const player = connectedPlayers.get(socket.id);
+        if (!player) {
+            socket.emit('room:error', 'Vous devez être connecté');
+            return;
+        }
+
+        const result = gameManager.removeBot(player, data.botId);
+        if (result.error) {
+            socket.emit('room:error', result.error);
+            return;
+        }
+
+        if (result.room) {
+            io.to(result.room.id).emit('room:updated', result.room);
+            console.log(`[Room] Bot retiré de la room "${result.room.name}"`);
+        }
+    });
+
     // --- Événements Skyjo ---
 
     socket.on('skyjo:revealInitial', (cardIndices) => {
@@ -162,7 +289,17 @@ io.on('connection', (socket) => {
         }
 
         if (result.gameState) {
-            io.to(result.roomId!).emit('skyjo:state', result.gameState);
+            // Faire révéler les cartes initiales des bots aussi
+            gameManager.processBotInitialReveal(result.roomId!);
+
+            // Récupérer l'état mis à jour après les révélations des bots
+            const updatedState = gameManager.getGameState(result.roomId!);
+            io.to(result.roomId!).emit('skyjo:state', updatedState || result.gameState);
+
+            // Si la phase de jeu a commencé et c'est au tour d'un bot, le faire jouer
+            if (updatedState && updatedState.phase === 'playing') {
+                handleBotTurns(result.roomId!);
+            }
         }
     });
 
@@ -224,6 +361,14 @@ io.on('connection', (socket) => {
             if (result.gameEnd) {
                 io.to(result.roomId!).emit('skyjo:gameEnd', result.gameEnd);
             }
+
+            // Faire jouer les bots avec délai
+            if (!result.roundEnd && !result.gameEnd) {
+                // Faire jouer les bots avec délai
+                if (!result.roundEnd && !result.gameEnd) {
+                    handleBotTurns(result.roomId!);
+                }
+            }
         }
     });
 
@@ -264,6 +409,34 @@ io.on('connection', (socket) => {
             if (result.gameEnd) {
                 io.to(result.roomId!).emit('skyjo:gameEnd', result.gameEnd);
             }
+
+            // Faire jouer les bots avec délai
+            if (!result.roundEnd && !result.gameEnd) {
+                // Faire jouer les bots avec délai
+                if (!result.roundEnd && !result.gameEnd) {
+                    handleBotTurns(result.roomId!);
+                }
+            }
+        }
+    });
+
+    socket.on('skyjo:nextRound', () => {
+        const player = connectedPlayers.get(socket.id);
+        if (!player) return;
+
+        const result = gameManager.skyjoNextRound(player);
+        if (result.error) {
+            socket.emit('skyjo:error', result.error);
+            return;
+        }
+
+        if (result.gameState) {
+            // Faire révéler les cartes initiales des bots pour la nouvelle manche
+            gameManager.processBotInitialReveal(result.roomId!);
+
+            // Récupérer l'état mis à jour après les révélations des bots
+            const updatedState = gameManager.getGameState(result.roomId!);
+            io.to(result.roomId!).emit('skyjo:state', updatedState || result.gameState);
         }
     });
 
@@ -280,6 +453,7 @@ io.on('connection', (socket) => {
             }
 
             connectedPlayers.delete(socket.id);
+            broadcastOnlineCount();
             console.log(`[Déconnexion] ${player.username}`);
         }
     });

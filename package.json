@@ -4,7 +4,7 @@
     "description": "Hub de jeux multijoueur avec Skyjo",
     "type": "module",
     "scripts": {
-        "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+        "dev": "set PORT=3001 && concurrently \"npm run server:dev\" \"npm run client:dev\"",
         "server:dev": "tsx watch server/index.ts",
         "client:dev": "cd client && ng serve --host 0.0.0.0 --port 4200",
         "build:client": "cd client && ng build",
@@ -12,7 +12,7 @@
         "build": "npm run build:client && npm run build:server",
         "start": "node dist/server/index.js",
         "prod": "npm run build && npm run start",
-        "stable": "set PORT=3001 && node dist/server/index.js"
+        "stable": "node dist/server/index.js"
     },
     "dependencies": {
         "express": "^4.21.0",
