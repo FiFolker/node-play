@@ -13,6 +13,7 @@ import type {
     SkyjoGameState,
     ClientToServerEvents,
     ServerToClientEvents,
+    BotDifficulty,
     SkyjoCard
 } from '../shared/types.js';
 
@@ -84,7 +85,7 @@ export class GameManager {
     /**
      * Crée une room solo avec des bots IA
      */
-    createSoloRoom(player: Player, numBots: number): { room: GameRoom; gameState: SkyjoGameState } {
+    createSoloRoom(player: Player, numBots: number, botDifficulty: BotDifficulty = 'medium'): { room: GameRoom; gameState: SkyjoGameState } {
         // Si le joueur est déjà dans une room, le retirer
         this.leaveRoom(player);
 
@@ -98,10 +99,11 @@ export class GameManager {
         for (let i = 0; i < clampedBots; i++) {
             bots.push({
                 id: SkyjoAI.generateBotId(),
-                username: SkyjoAI.generateBotName(i),
+                username: SkyjoAI.generateBotName(i, botDifficulty),
                 isHost: false,
                 isReady: true,
-                isBot: true
+                isBot: true,
+                botDifficulty
             });
         }
 
@@ -142,10 +144,46 @@ export class GameManager {
 
         for (const player of room.players) {
             if (player.isBot) {
-                const indices = SkyjoAI.chooseInitialCards();
+                const indices = SkyjoAI.chooseInitialCards(player.botDifficulty || 'medium');
                 game.revealInitialCards(player.id, indices);
             }
         }
+    }
+
+    /**
+     * Fait signaler un bot comme "prêt" pour la manche suivante
+     * Appelle setReadyForNextRound pour un bot non-prêt
+     */
+    setBotReadyForNextRound(roomId: string): { gameState?: SkyjoGameState; allReady: boolean } | null {
+        const game = this.skyjoGames.get(roomId);
+        const room = this.rooms.get(roomId);
+        if (!game || !room) return null;
+
+        const state = game.getState(roomId);
+        const readySet = new Set(state.readyForNextRound || []);
+
+        // Trouver le premier bot qui n'est pas encore prêt
+        for (const player of room.players) {
+            if (player.isBot && !readySet.has(player.id)) {
+                const result = game.setReadyForNextRound(player.id);
+
+                if (result.allReady) {
+                    game.startNextRound();
+                    this.processBotInitialReveal(roomId);
+                }
+
+                return {
+                    gameState: game.getState(roomId),
+                    allReady: result.allReady
+                };
+            }
+        }
+
+        // Tous les bots sont déjà prêts
+        return {
+            gameState: game.getState(roomId),
+            allReady: false
+        };
     }
 
     /**
@@ -210,7 +248,8 @@ export class GameManager {
         const topDiscard = state.discardPile.length > 0 ? state.discardPile[state.discardPile.length - 1] : null;
 
         // Phase 1: Décider quoi faire
-        let decision = SkyjoAI.decideTurn(currentPlayer, topDiscard, state.drawnCard || null);
+        const difficulty = currentPlayer.botDifficulty || 'medium';
+        let decision = SkyjoAI.decideTurn(currentPlayer, topDiscard, state.drawnCard || null, difficulty, state.players);
 
         // Exécuter l'action
         if (decision.action === 'drawDeck') {
@@ -218,13 +257,13 @@ export class GameManager {
             // Redemander après avoir pioché
             const newState = game.getState(roomId);
             const updatedPlayer = newState.players.find(p => p.oderId === playerId);
-            decision = SkyjoAI.decideTurn(updatedPlayer!, topDiscard, newState.drawnCard || null);
+            decision = SkyjoAI.decideTurn(updatedPlayer!, topDiscard, newState.drawnCard || null, difficulty, newState.players);
         } else if (decision.action === 'drawDiscard') {
             game.drawFromDiscard(playerId);
             // Redemander après avoir pioché
             const newState = game.getState(roomId);
             const updatedPlayer = newState.players.find(p => p.oderId === playerId);
-            decision = SkyjoAI.decideTurn(updatedPlayer!, topDiscard, newState.drawnCard || null);
+            decision = SkyjoAI.decideTurn(updatedPlayer!, topDiscard, newState.drawnCard || null, difficulty, newState.players);
         }
 
         // Phase 2: Échanger ou défausser
@@ -238,7 +277,7 @@ export class GameManager {
         } else if (decision.action === 'discard') {
             game.discardDrawnCard(playerId);
             // Révéler une carte
-            const revealPos = SkyjoAI.chooseCardToReveal(currentPlayer);
+            const revealPos = SkyjoAI.chooseCardToReveal(currentPlayer, difficulty);
             const result = game.revealCard(playerId, revealPos);
             return {
                 gameState: game.getState(roomId),
@@ -253,7 +292,7 @@ export class GameManager {
     /**
      * Ajoute un bot à une room existante
      */
-    addBot(player: Player): { room?: GameRoom; error?: string } {
+    addBot(player: Player, difficulty: BotDifficulty = 'medium'): { room?: GameRoom; error?: string } {
         const roomId = this.playerRooms.get(player.id);
         if (!roomId) return { error: 'Vous n\'êtes dans aucune partie' };
 
@@ -279,10 +318,11 @@ export class GameManager {
         const botIndex = room.players.filter(p => p.isBot).length;
         const bot: Player = {
             id: SkyjoAI.generateBotId(),
-            username: SkyjoAI.generateBotName(botIndex),
+            username: SkyjoAI.generateBotName(botIndex, difficulty),
             isHost: false,
             isReady: true,
-            isBot: true
+            isBot: true,
+            botDifficulty: difficulty
         };
 
         room.players.push(bot);
@@ -520,7 +560,7 @@ export class GameManager {
     skyjoSwapCard(player: Player, position: { col: number; row: number }): {
         gameState?: SkyjoGameState;
         roomId?: string;
-        roundEnd?: { playerId: string; roundScore: number; totalScore: number }[];
+        roundEnd?: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] };
         gameEnd?: { playerId: string; username: string; score: number };
         error?: string
     } {
@@ -563,7 +603,7 @@ export class GameManager {
     skyjoRevealCard(player: Player, position: { col: number; row: number }): {
         gameState?: SkyjoGameState;
         roomId?: string;
-        roundEnd?: { playerId: string; roundScore: number; totalScore: number }[];
+        roundEnd?: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] };
         gameEnd?: { playerId: string; username: string; score: number };
         error?: string
     } {
@@ -604,6 +644,39 @@ export class GameManager {
         return {
             gameState: game.getState(roomId),
             roomId
+        };
+    }
+
+    /**
+     * Signale qu'un joueur est prêt pour la manche suivante
+     */
+    skyjoSetReadyForNextRound(player: Player): {
+        gameState?: SkyjoGameState;
+        roomId?: string;
+        allReady: boolean;
+        error?: string
+    } {
+        const roomId = this.playerRooms.get(player.id);
+        if (!roomId) return { allReady: false, error: 'Partie introuvable' };
+
+        const game = this.skyjoGames.get(roomId);
+        if (!game) return { allReady: false, error: 'Jeu non trouvé' };
+
+        const result = game.setReadyForNextRound(player.id);
+        if (result.error) return { allReady: false, error: result.error };
+
+        // Si tous les joueurs sont prêts, démarrer la nouvelle manche
+        if (result.allReady) {
+            game.startNextRound();
+
+            // Faire révéler les cartes initiales des bots
+            this.processBotInitialReveal(roomId);
+        }
+
+        return {
+            gameState: game.getState(roomId),
+            roomId,
+            allReady: result.allReady
         };
     }
 

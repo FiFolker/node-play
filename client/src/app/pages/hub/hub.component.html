@@ -216,6 +216,30 @@
                 </div>
             </div>
 
+            <div class="form-group">
+                <label class="form-label">Difficulté</label>
+                <div class="difficulty-options">
+                    <button type="button" class="difficulty-option" [class.active]="botDifficulty() === 'easy'"
+                        (click)="botDifficulty.set('easy')">
+                        <span class="diff-emoji">🟢</span>
+                        <span class="diff-name">Facile</span>
+                        <small>Décisions aléatoires</small>
+                    </button>
+                    <button type="button" class="difficulty-option" [class.active]="botDifficulty() === 'medium'"
+                        (click)="botDifficulty.set('medium')">
+                        <span class="diff-emoji">🟡</span>
+                        <span class="diff-name">Normal</span>
+                        <small>Stratégie basique</small>
+                    </button>
+                    <button type="button" class="difficulty-option" [class.active]="botDifficulty() === 'hard'"
+                        (click)="botDifficulty.set('hard')">
+                        <span class="diff-emoji">🔴</span>
+                        <span class="diff-name">Expert</span>
+                        <small>Analyse avancée</small>
+                    </button>
+                </div>
+            </div>
+
             <div class="modal-actions">
                 <button type="button" class="btn btn-secondary" (click)="closeSoloModal()">
                     Annuler

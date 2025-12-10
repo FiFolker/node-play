@@ -34,6 +34,7 @@ export class SkyjoGame {
     private roundNumber: number = 1;
     private finisherId: string | null = null;
     private lastTurnPlayers: Set<string> = new Set(); // Joueurs ayant joué leur dernier tour
+    private nextRoundReady: Set<string> = new Set(); // Joueurs prêts pour la manche suivante
 
     constructor(players: Player[]) {
         // Initialiser les joueurs
@@ -57,6 +58,7 @@ export class SkyjoGame {
         // Réinitialiser l'état
         this.phase = 'setup';
         this.setupPlayersReady.clear();
+        this.nextRoundReady.clear();
         this.drawnCard = null;
         this.mustRevealCard = false;
         this.finisherId = null;
@@ -212,7 +214,7 @@ export class SkyjoGame {
      * Échange la carte piochée avec une carte de la grille
      */
     swapCard(playerId: string, position: { col: number; row: number }): {
-        roundEnd?: { playerId: string; roundScore: number; totalScore: number }[];
+        roundEnd?: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] };
         gameEnd?: { playerId: string; username: string; score: number };
         error?: string
     } {
@@ -274,7 +276,7 @@ export class SkyjoGame {
      * Révèle une carte face cachée (après avoir défaussé)
      */
     revealCard(playerId: string, position: { col: number; row: number }): {
-        roundEnd?: { playerId: string; roundScore: number; totalScore: number }[];
+        roundEnd?: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] };
         gameEnd?: { playerId: string; username: string; score: number };
         error?: string
     } {
@@ -445,7 +447,7 @@ export class SkyjoGame {
      * Gère le cas où un joueur a révélé toutes ses cartes
      */
     private handlePlayerFinished(playerId: string): {
-        roundEnd?: { playerId: string; roundScore: number; totalScore: number }[];
+        roundEnd?: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] };
         gameEnd?: { playerId: string; username: string; score: number };
         error?: string
     } {
@@ -472,7 +474,7 @@ export class SkyjoGame {
      * Passe au joueur suivant
      */
     private nextTurn(): {
-        roundEnd?: { playerId: string; roundScore: number; totalScore: number }[];
+        roundEnd?: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] };
         gameEnd?: { playerId: string; username: string; score: number };
         error?: string
     } {
@@ -501,11 +503,12 @@ export class SkyjoGame {
      * Termine la manche et calcule les scores
      */
     private endRound(): {
-        roundEnd: { playerId: string; roundScore: number; totalScore: number }[];
+        roundEnd: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] };
         gameEnd?: { playerId: string; username: string; score: number };
     } {
         this.phase = 'roundEnd';
-        console.log('[endRound] Manche terminée, phase:', this.phase);
+        const finishedRoundNumber = this.roundNumber; // Capture avant incrémentation
+        console.log('[endRound] Manche', finishedRoundNumber, 'terminée, phase:', this.phase);
 
         // Révéler toutes les cartes restantes
         for (const player of this.players) {
@@ -557,15 +560,14 @@ export class SkyjoGame {
 
         if (loser) {
             console.log('[endRound] FIN DE PARTIE - Appel endGame()');
-            return this.endGame(roundScores);
+            return this.endGame(roundScores, finishedRoundNumber);
         }
 
-        // Préparer la prochaine manche
-        console.log('[endRound] Pas de fin de partie - Manche suivante');
-        this.roundNumber++;
-        this.startNewRound();
+        // Rester en phase roundEnd - attendre que les joueurs soient prêts
+        console.log('[endRound] En attente des joueurs prêts pour la manche suivante');
+        this.nextRoundReady.clear();
 
-        return { roundEnd: roundScores };
+        return { roundEnd: { finishedRoundNumber, scores: roundScores } };
     }
 
     /**
@@ -584,8 +586,8 @@ export class SkyjoGame {
     /**
      * Termine la partie et détermine le gagnant
      */
-    private endGame(roundScores: { playerId: string; roundScore: number; totalScore: number }[]): {
-        roundEnd: { playerId: string; roundScore: number; totalScore: number }[];
+    private endGame(roundScores: { playerId: string; roundScore: number; totalScore: number }[], finishedRoundNumber: number): {
+        roundEnd: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] };
         gameEnd: { playerId: string; username: string; score: number };
     } {
         this.phase = 'gameEnd';
@@ -599,7 +601,7 @@ export class SkyjoGame {
         }
 
         return {
-            roundEnd: roundScores,
+            roundEnd: { finishedRoundNumber, scores: roundScores },
             gameEnd: {
                 playerId: winner.oderId,
                 username: winner.username,
@@ -624,23 +626,47 @@ export class SkyjoGame {
             } : undefined,
             drawnCard: this.drawnCard || undefined,
             roundNumber: this.roundNumber,
-            finisherId: this.finisherId || undefined
+            finisherId: this.finisherId || undefined,
+            readyForNextRound: this.phase === 'roundEnd' ? Array.from(this.nextRoundReady) : undefined
         };
     }
 
     /**
-     * Passe à la manche suivante (appelé par le client ou le jeu)
+     * Signale qu'un joueur est prêt pour la manche suivante
+     * Retourne true si tous les joueurs sont prêts
      */
+    setReadyForNextRound(playerId: string): { allReady: boolean; error?: string } {
+        if (this.phase !== 'roundEnd') {
+            return { allReady: false, error: 'La manche n\'est pas terminée' };
+        }
+
+        this.nextRoundReady.add(playerId);
+        console.log(`[Ready] ${playerId} est prêt (${this.nextRoundReady.size}/${this.players.length})`);
+
+        // Vérifier si tous les joueurs sont prêts
+        const allReady = this.nextRoundReady.size >= this.players.length;
+        return { allReady };
+    }
+
+    /**
+     * Démarre la manche suivante (appelé quand tous sont prêts)
+     */
+    startNextRound(): void {
+        if (this.phase !== 'roundEnd') return;
+
+        console.log('[NextRound] Démarrage de la manche', this.roundNumber + 1);
+        this.roundNumber++;
+        this.startNewRound();
+    }
+
     nextRound(playerId: string): {
         error?: string
     } {
-        // Seul l'hôte ou le joueur actuel peut lancer la manche suivante (ou n'importe qui en setup/fin)
-        // Ici on simplifie : n'importe qui peut signaler prêt ou lancer si c'est fini
+        // Méthode obsolète, gardée pour compatibilité
         if (this.phase !== 'gameEnd' && this.phase !== 'roundEnd') {
             return { error: 'La manche n\'est pas terminée' };
         }
 
-        // Logique simplifiée : réinitialiser pour la prochaine manche
         this.resetRound();
         return {};
     }
@@ -652,6 +678,7 @@ export class SkyjoGame {
         this.roundNumber++;
         this.phase = 'setup';
         this.setupPlayersReady.clear();
+        this.nextRoundReady.clear();
         this.drawPile = [];
         this.discardPile = [];
         this.drawnCard = null;

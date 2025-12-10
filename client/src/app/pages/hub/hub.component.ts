@@ -28,6 +28,7 @@ export class HubComponent implements OnInit, OnDestroy {
   // Mode solo
   showSoloModal = signal(false);
   numBots = signal(3);
+  botDifficulty = signal<'easy' | 'medium' | 'hard'>('medium');
 
   // Profile management
   isRenaming = signal(false);
@@ -175,7 +176,8 @@ export class HubComponent implements OnInit, OnDestroy {
 
   openSoloModal(): void {
     this.showSoloModal.set(true);
-    this.numBots.set(3); // Par défaut 3 bots
+    this.numBots.set(3);
+    this.botDifficulty.set('medium');
   }
 
   closeSoloModal(): void {
@@ -188,7 +190,7 @@ export class HubComponent implements OnInit, OnDestroy {
   }
 
   startSoloGame(): void {
-    this.socketService.createSoloRoom(this.numBots());
+    this.socketService.createSoloRoom(this.numBots(), this.botDifficulty());
     this.closeSoloModal();
 
     // Attendre que le jeu démarre pour rediriger vers la partie

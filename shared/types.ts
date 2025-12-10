@@ -7,12 +7,15 @@
 // Types pour les joueurs
 // ============================================
 
+export type BotDifficulty = 'easy' | 'medium' | 'hard';
+
 export interface Player {
     id: string;           // Socket ID
     username: string;     // Pseudo du joueur
     isHost: boolean;      // Est-ce l'hôte de la partie ?
     isReady: boolean;     // Prêt à jouer ?
     isBot?: boolean;      // Est-ce un bot IA ?
+    botDifficulty?: BotDifficulty; // Niveau de difficulté du bot
 }
 
 // ============================================
@@ -54,6 +57,7 @@ export interface SkyjoPlayerState {
     hasFinished: boolean; // A révélé toutes ses cartes ?
     disconnected?: boolean; // Joueur déconnecté ?
     isBot?: boolean;      // Est-ce un bot IA ?
+    botDifficulty?: BotDifficulty; // Niveau de difficulté du bot
 }
 
 export interface SkyjoGameState {
@@ -69,6 +73,7 @@ export interface SkyjoGameState {
     drawnCard?: SkyjoCard;  // Carte piochée en attente
     roundNumber: number;
     finisherId?: string;    // Joueur qui a terminé la manche
+    readyForNextRound?: string[]; // Joueurs prêts pour la manche suivante (en phase roundEnd)
 }
 
 // ============================================
@@ -87,8 +92,8 @@ export interface ClientToServerEvents {
     'room:ready': () => void;
     'room:start': () => void;
     'room:list': () => void;
-    'room:createSolo': (data: { numBots: number }) => void;
-    'room:addBot': () => void;
+    'room:createSolo': (data: { numBots: number; difficulty?: BotDifficulty }) => void;
+    'room:addBot': (data?: { difficulty?: BotDifficulty }) => void;
     'room:removeBot': (data: { botId: string }) => void;
 
     // Skyjo
@@ -99,6 +104,7 @@ export interface ClientToServerEvents {
     'skyjo:discardDrawn': () => void;
     'skyjo:revealCard': (position: { col: number; row: number }) => void;
     'skyjo:nextRound': () => void;
+    'skyjo:readyForNextRound': () => void;  // Signaler qu'on est prêt pour la manche suivante
 }
 
 // ============================================
@@ -124,7 +130,7 @@ export interface ServerToClientEvents {
     'skyjo:state': (state: SkyjoGameState) => void;
     'skyjo:yourTurn': () => void;
     'skyjo:cardDrawn': (card: SkyjoCard) => void;
-    'skyjo:roundEnd': (scores: { playerId: string; roundScore: number; totalScore: number }[]) => void;
+    'skyjo:roundEnd': (data: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] }) => void;
     'skyjo:gameEnd': (winner: { playerId: string; username: string; score: number }) => void;
     'skyjo:error': (message: string) => void;
 }

@@ -42,8 +42,10 @@
                         </div>
                         }
                         } @else {
-                        <!-- Colonne vide placeholder -->
-                        <div class="mini-card-placeholder"></div>
+                        <!-- Colonne éliminée : 3 cartes X grisées -->
+                        <div class="mini-card eliminated-card">✕</div>
+                        <div class="mini-card eliminated-card">✕</div>
+                        <div class="mini-card eliminated-card">✕</div>
                         }
                     </div>
                     }
@@ -104,9 +106,11 @@
                     <div class="player-grid">
                         @for (col of myPlayerState()?.grid || []; track $index; let colIdx = $index) {
                         <div class="grid-col" [class.eliminated]="col.length === 0">
-                            <!-- Placeholder si colonne vide -->
                             @if (col.length === 0) {
-                            <div class="game-card placeholder"></div>
+                            <!-- Colonne éliminée : 3 cartes X grisées -->
+                            <div class="game-card eliminated-card"><span class="card-num">✕</span></div>
+                            <div class="game-card eliminated-card"><span class="card-num">✕</span></div>
+                            <div class="game-card eliminated-card"><span class="card-num">✕</span></div>
                             } @else {
                             @for (card of col; track card.id; let rowIdx = $index) {
                             <button class="game-card" [class.revealed]="card.isRevealed"
@@ -137,7 +141,7 @@
                         </div>
                         <div class="hud-score">
                             <div class="score-val">{{ myCurrentScore() }}</div>
-                            <span class="score-label">Points Actuels</span>
+                            <span class="score-label">Cette Manche</span>
                         </div>
                     </div>
                 </div>
@@ -171,27 +175,53 @@
 
     <!-- Modals (Overlay) -->
 
-    <!-- Modal Fin de Manche (seulement si PAS de fin de partie) -->
-    @if (socketService.roundEndScores() && !socketService.gameEndWinner()) {
-    <div class="modal-overlay">
-        <div class="modal-box large">
-            <h3>📊 Fin de Manche {{ socketService.gameState()?.roundNumber }}</h3>
-            <div class="scores-table">
+    <!-- Bannière Fin de Manche (flottante, ne bloque pas la vue) -->
+    @if (socketService.gameState()?.phase === 'roundEnd' && !socketService.gameEndWinner()) {
+    <div class="round-end-banner">
+        <div class="banner-content">
+            <div class="banner-header">
+                <span class="banner-title">🏁 Manche {{ socketService.roundEndData()?.finishedRoundNumber ||
+                    socketService.gameState()?.roundNumber }} terminée !</span>
+            </div>
+
+            <!-- Scores compacts -->
+            <div class="banner-scores">
                 @for (s of sortedScores(); track s.playerId) {
-                <div class="score-line" [class.me]="s.playerId === socketService.currentPlayer()?.id">
-                    <span class="name">{{ getPlayerName(s.playerId) }}</span>
-                    <span class="round-pts">+{{ s.roundScore }}</span>
-                    <span class="total-pts">{{ s.totalScore }}</span>
+                <div class="score-chip" [class.me]="s.playerId === socketService.currentPlayer()?.id">
+                    <span class="chip-name">{{ getPlayerName(s.playerId) }}</span>
+                    <span class="chip-pts">+{{ s.roundScore }}</span>
                 </div>
                 }
             </div>
-            <button class="btn-primary" (click)="socketService.clearRoundEnd()">Manche Suivante</button>
+
+            <!-- Statut prêt des joueurs -->
+            <div class="ready-status">
+                @for (p of socketService.gameState()?.players; track p.oderId) {
+                <span class="ready-dot" [class.ready]="isPlayerReady(p.oderId)"
+                    [class.me]="p.oderId === socketService.currentPlayer()?.id"
+                    [title]="p.username + (isPlayerReady(p.oderId) ? ' ✓' : ' ...')">
+                    {{ isPlayerReady(p.oderId) ? '✓' : '○' }}
+                </span>
+                }
+                <span class="ready-count">{{ readyCount() }}/{{ socketService.gameState()?.players?.length }}
+                    prêts</span>
+            </div>
+
+            <!-- Bouton Prêt -->
+            @if (!isCurrentPlayerReady()) {
+            <button class="btn-ready" (click)="setReadyForNextRound()">
+                ✓ Prêt pour la suite
+            </button>
+            } @else {
+            <div class="waiting-text">En attente des autres joueurs...</div>
+            }
         </div>
     </div>
     }
 
     <!-- Modal Fin de Jeu avec Podium -->
     @if (socketService.gameEndWinner(); as w) {
+    @if (showGameEndModal()) {
     <div class="modal-overlay">
         <div class="modal-box game-over">
             <div class="game-over-header">
@@ -251,9 +281,18 @@
             </div>
             }
 
-            <button class="btn-primary" (click)="returnToHub()">Retour au Hub</button>
+            <div class="modal-actions">
+                <button class="btn-secondary" (click)="showGameEndModal.set(false)">👁️ Voir les plateaux</button>
+                <button class="btn-primary" (click)="returnToHub()">Retour au Hub</button>
+            </div>
         </div>
     </div>
+    } @else {
+    <!-- Bouton flottant pour ré-afficher le modal -->
+    <button class="floating-results-btn" (click)="showGameEndModal.set(true)">
+        🏆 Afficher les résultats
+    </button>
+    }
     }
 </div>
 

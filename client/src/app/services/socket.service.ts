@@ -29,7 +29,7 @@ export class SocketService {
     private _gameState = signal<SkyjoGameState | null>(null);
     private _drawnCard = signal<SkyjoCard | null>(null);
     private _error = signal<string | null>(null);
-    private _roundEndScores = signal<{ playerId: string; roundScore: number; totalScore: number }[] | null>(null);
+    private _roundEndData = signal<{ finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] } | null>(null);
     private _gameEndWinner = signal<{ playerId: string; username: string; score: number } | null>(null);
     private _onlineCount = signal<number>(0);
     private _isDev = signal<boolean>(typeof window !== 'undefined' && window.location.port === '4200');
@@ -42,7 +42,9 @@ export class SocketService {
     readonly gameState = this._gameState.asReadonly();
     readonly drawnCard = this._drawnCard.asReadonly();
     readonly error = this._error.asReadonly();
-    readonly roundEndScores = this._roundEndScores.asReadonly();
+    readonly roundEndData = this._roundEndData.asReadonly();
+    // Computed pour les scores seulement (pour compatibilité)
+    readonly roundEndScores = computed(() => this._roundEndData()?.scores || null);
     readonly gameEndWinner = this._gameEndWinner.asReadonly();
     readonly onlineCount = this._onlineCount.asReadonly();
     readonly isDev = this._isDev.asReadonly();
@@ -212,15 +214,15 @@ export class SocketService {
             this._drawnCard.set(card);
         });
 
-        this.socket.on('skyjo:roundEnd', (scores) => {
-            console.log('[Socket] roundEnd reçu:', scores);
-            this._roundEndScores.set(scores);
+        this.socket.on('skyjo:roundEnd', (data) => {
+            console.log('[Socket] roundEnd reçu:', data);
+            this._roundEndData.set(data);
         });
 
         this.socket.on('skyjo:gameEnd', (winner) => {
             console.log('[Socket] gameEnd reçu:', winner);
-            // Effacer roundEndScores pour afficher le modal de fin de partie
-            this._roundEndScores.set(null);
+            // Effacer roundEndData pour afficher le modal de fin de partie
+            this._roundEndData.set(null);
             this._gameEndWinner.set(winner);
         });
 
@@ -243,8 +245,8 @@ export class SocketService {
         this.socket?.emit('room:create', { name, gameType, isPrivate });
     }
 
-    createSoloRoom(numBots: number): void {
-        this.socket?.emit('room:createSolo', { numBots });
+    createSoloRoom(numBots: number, difficulty: 'easy' | 'medium' | 'hard' = 'medium'): void {
+        this.socket?.emit('room:createSolo', { numBots, difficulty });
     }
 
     joinRoom(roomId: string, privateCode?: string): void {
@@ -256,7 +258,7 @@ export class SocketService {
         this._currentRoom.set(null);
         this._gameState.set(null);
         this._drawnCard.set(null);
-        this._roundEndScores.set(null);
+        this._roundEndData.set(null);
         this._gameEndWinner.set(null);
         this._error.set(null);
 
@@ -316,6 +318,10 @@ export class SocketService {
         this.socket?.emit('skyjo:revealCard', { col, row });
     }
 
+    setReadyForNextRound(): void {
+        this.socket?.emit('skyjo:readyForNextRound');
+    }
+
     // ============================================
     // Utilitaires
     // ============================================
@@ -325,7 +331,7 @@ export class SocketService {
     }
 
     clearRoundEnd(): void {
-        this._roundEndScores.set(null);
+        this._roundEndData.set(null);
     }
 
     clearGameEnd(): void {

@@ -39,6 +39,24 @@ function broadcastOnlineCount() {
     io.emit('players:online', connectedPlayers.size);
 }
 
+// Fonction pour faire les bots signaler "prêt" après un délai
+function handleBotReadyForNextRound(roomId: string) {
+    setTimeout(() => {
+        const result = gameManager.setBotReadyForNextRound(roomId);
+        if (result && result.gameState) {
+            io.to(roomId).emit('skyjo:state', result.gameState);
+
+            // Si tous sont prêts et la phase a changé, faire jouer les bots
+            if (result.allReady && result.gameState.phase === 'playing') {
+                handleBotTurns(roomId);
+            } else if (!result.allReady) {
+                // Rappeler pour le prochain bot
+                handleBotReadyForNextRound(roomId);
+            }
+        }
+    }, BOT_TURN_DELAY);
+}
+
 // Fonction pour gérer les tours des bots récursivement avec délai
 function handleBotTurns(roomId: string) {
     setTimeout(() => {
@@ -48,20 +66,18 @@ function handleBotTurns(roomId: string) {
 
             if (botResult.roundEnd) {
                 io.to(roomId).emit('skyjo:roundEnd', botResult.roundEnd);
+            }
 
-                // Préparer la nouvelle manche pour les bots
-                gameManager.processBotInitialReveal(roomId);
-
-                // Envoyer l'état mis à jour (les bots ont révélé)
-                const updatedState = gameManager.getGameState(roomId);
-                if (updatedState) {
-                    io.to(roomId).emit('skyjo:state', updatedState);
-                }
+            // Vérifier gameEnd (peut être présent avec roundEnd lors d'une fin de partie)
+            if (botResult.gameEnd) {
+                io.to(roomId).emit('skyjo:gameEnd', botResult.gameEnd);
                 return;
             }
 
-            if (botResult.gameEnd) {
-                io.to(roomId).emit('skyjo:gameEnd', botResult.gameEnd);
+            // Si roundEnd mais pas gameEnd, les bots doivent signaler "prêt" après un délai
+            if (botResult.roundEnd) {
+                // Lancer le processus de "ready" des bots avec délai
+                handleBotReadyForNextRound(roomId);
                 return;
             }
 
@@ -231,21 +247,21 @@ io.on('connection', (socket) => {
             return;
         }
 
-        const result = gameManager.createSoloRoom(player, data.numBots);
+        const result = gameManager.createSoloRoom(player, data.numBots, data.difficulty || 'medium');
         socket.join(result.room.id);
         socket.emit('room:created', result.room);
         socket.emit('skyjo:state', result.gameState);
-        console.log(`[Solo] ${player.username} a créé une partie solo contre ${data.numBots} bot(s)`);
+        console.log(`[Solo] ${player.username} a créé une partie solo contre ${data.numBots} bot(s) (${data.difficulty || 'medium'})`);
     });
 
-    socket.on('room:addBot', () => {
+    socket.on('room:addBot', (data) => {
         const player = connectedPlayers.get(socket.id);
         if (!player) {
             socket.emit('room:error', 'Vous devez être connecté');
             return;
         }
 
-        const result = gameManager.addBot(player);
+        const result = gameManager.addBot(player, data?.difficulty || 'medium');
         if (result.error) {
             socket.emit('room:error', result.error);
             return;
@@ -253,7 +269,7 @@ io.on('connection', (socket) => {
 
         if (result.room) {
             io.to(result.room.id).emit('room:updated', result.room);
-            console.log(`[Room] Bot ajouté à la room "${result.room.name}"`);
+            console.log(`[Room] Bot (${data?.difficulty || 'medium'}) ajouté à la room "${result.room.name}"`);
         }
     });
 
@@ -437,6 +453,27 @@ io.on('connection', (socket) => {
             // Récupérer l'état mis à jour après les révélations des bots
             const updatedState = gameManager.getGameState(result.roomId!);
             io.to(result.roomId!).emit('skyjo:state', updatedState || result.gameState);
+        }
+    });
+
+    socket.on('skyjo:readyForNextRound', () => {
+        const player = connectedPlayers.get(socket.id);
+        if (!player) return;
+
+        const result = gameManager.skyjoSetReadyForNextRound(player);
+        if (result.error) {
+            socket.emit('skyjo:error', result.error);
+            return;
+        }
+
+        if (result.gameState && result.roomId) {
+            // Émettre l'état mis à jour à tous
+            io.to(result.roomId).emit('skyjo:state', result.gameState);
+
+            // Si la nouvelle manche a démarré (allReady), faire jouer les bots
+            if (result.allReady && result.gameState.phase === 'playing') {
+                handleBotTurns(result.roomId);
+            }
         }
     });
 

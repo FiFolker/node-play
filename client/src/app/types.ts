@@ -7,12 +7,15 @@
 // Types pour les joueurs
 // ============================================
 
+export type BotDifficulty = 'easy' | 'medium' | 'hard';
+
 export interface Player {
     id: string;
     username: string;
     isHost: boolean;
     isReady: boolean;
     isBot?: boolean;
+    botDifficulty?: BotDifficulty;
 }
 
 // ============================================
@@ -52,6 +55,8 @@ export interface SkyjoPlayerState {
     roundScore: number;   // Score de la manche en cours
     hasFinished: boolean; // A révélé toutes ses cartes ?
     disconnected?: boolean; // Joueur déconnecté ?
+    isBot?: boolean;
+    botDifficulty?: BotDifficulty;
 }
 
 export interface SkyjoGameState {
@@ -67,6 +72,7 @@ export interface SkyjoGameState {
     drawnCard?: SkyjoCard;
     roundNumber: number;
     finisherId?: string;
+    readyForNextRound?: string[]; // Joueurs prêts pour la manche suivante
 }
 
 // ============================================
@@ -82,8 +88,8 @@ export interface ClientToServerEvents {
     'room:ready': () => void;
     'room:start': () => void;
     'room:list': () => void;
-    'room:createSolo': (data: { numBots: number }) => void;
-    'room:addBot': () => void;
+    'room:createSolo': (data: { numBots: number; difficulty?: BotDifficulty }) => void;
+    'room:addBot': (data?: { difficulty?: BotDifficulty }) => void;
     'room:removeBot': (data: { botId: string }) => void;
     'skyjo:revealInitial': (cardIndices: [number, number]) => void;
     'skyjo:drawFromDeck': () => void;
@@ -91,6 +97,7 @@ export interface ClientToServerEvents {
     'skyjo:swapCard': (position: { col: number; row: number }) => void;
     'skyjo:discardDrawn': () => void;
     'skyjo:revealCard': (position: { col: number; row: number }) => void;
+    'skyjo:readyForNextRound': () => void;
 }
 
 export interface ServerToClientEvents {
@@ -107,7 +114,7 @@ export interface ServerToClientEvents {
     'skyjo:state': (state: SkyjoGameState) => void;
     'skyjo:yourTurn': () => void;
     'skyjo:cardDrawn': (card: SkyjoCard) => void;
-    'skyjo:roundEnd': (scores: { playerId: string; roundScore: number; totalScore: number }[]) => void;
+    'skyjo:roundEnd': (data: { finishedRoundNumber: number; scores: { playerId: string; roundScore: number; totalScore: number }[] }) => void;
     'skyjo:gameEnd': (winner: { playerId: string; username: string; score: number }) => void;
     'skyjo:error': (message: string) => void;
 }

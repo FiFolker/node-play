@@ -23,6 +23,7 @@ export class SkyjoComponent implements OnInit, OnDestroy {
   selectedInitialCards = signal<number[]>([]);
   private waitingForReveal = signal(false);
   showLeaderboard = signal(false);
+  showGameEndModal = signal(true);  // Permet de cacher le modal de fin pour voir les plateaux
 
   ngOnInit(): void {
     if (!this.socketService.gameState()) {
@@ -94,11 +95,27 @@ export class SkyjoComponent implements OnInit, OnDestroy {
     return state.players.find((p: SkyjoPlayerState) => p.oderId === player.id);
   });
 
+  // Adversaires ordonnés dans le sens des aiguilles d'une montre
+  // Le joueur qui joue juste après toi est à gauche
   opponents = computed(() => {
     const state = this.socketService.gameState();
     const player = this.socketService.currentPlayer();
     if (!state || !player) return [];
-    return state.players.filter((p: SkyjoPlayerState) => p.oderId !== player.id);
+
+    // Trouver l'index du joueur courant
+    const myIndex = state.players.findIndex((p: SkyjoPlayerState) => p.oderId === player.id);
+    if (myIndex === -1) return state.players.filter((p: SkyjoPlayerState) => p.oderId !== player.id);
+
+    // Réordonner en commençant par le joueur suivant (sens horaire)
+    const orderedOpponents: SkyjoPlayerState[] = [];
+    const totalPlayers = state.players.length;
+
+    for (let i = 1; i < totalPlayers; i++) {
+      const idx = (myIndex + i) % totalPlayers;
+      orderedOpponents.push(state.players[idx]);
+    }
+
+    return orderedOpponents;
   });
 
   // Adversaires (utilise directement la propriété disconnected du state)
@@ -174,11 +191,20 @@ export class SkyjoComponent implements OnInit, OnDestroy {
     return score;
   }
 
-  // Calcule le score temps réel du joueur courant
+  // Calcule le score temps réel du joueur courant (manche actuelle seulement)
   myCurrentScore(): number {
     const player = this.myPlayerState();
     if (!player) return 0;
-    return this.calculatePlayerScore(player);
+    // Seulement les cartes révélées de la manche en cours, sans le score accumulé
+    let roundScore = 0;
+    for (const col of player.grid) {
+      for (const card of col) {
+        if (card.isRevealed) {
+          roundScore += card.value;
+        }
+      }
+    }
+    return roundScore;
   }
 
   canDrawFromDeck = () => this.isMyTurn() && !this.socketService.drawnCard() && !this.waitingForReveal() && this.phase() !== 'setup';
@@ -246,5 +272,25 @@ export class SkyjoComponent implements OnInit, OnDestroy {
     this.socketService.clearGameEnd();
     this.socketService.leaveRoom();
     this.router.navigate(['/hub']);
+  }
+
+  // Ready system helpers
+  isPlayerReady(playerId: string): boolean {
+    const readyList = this.socketService.gameState()?.readyForNextRound || [];
+    return readyList.includes(playerId);
+  }
+
+  readyCount = computed(() => {
+    return this.socketService.gameState()?.readyForNextRound?.length || 0;
+  });
+
+  isCurrentPlayerReady(): boolean {
+    const playerId = this.socketService.currentPlayer()?.id;
+    if (!playerId) return false;
+    return this.isPlayerReady(playerId);
+  }
+
+  setReadyForNextRound(): void {
+    this.socketService.setReadyForNextRound();
   }
 }
